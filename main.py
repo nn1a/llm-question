@@ -1,18 +1,24 @@
 """Question and Answer with RAG"""
 
-import os
 import argparse
+import os
+import sys
+
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import TextLoader
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_ollama import ChatOllama
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_huggingface.llms import HuggingFacePipeline
+from langchain_ollama import ChatOllama
 
 
-def load_and_split_markdown_files(folder_path, chunk_size=600, chunk_overlap=50):
+
+
+def load_and_split_markdown_files(folder_path, chunk_size=512, chunk_overlap=50):
     """
     Recursively loads and splits all Markdown files in a given folder.
     Args:
@@ -74,7 +80,7 @@ def load_vectorstore(vectorstore_path, embeddings):
     )
 
 
-def create_rag_chain(vectorstore, model_name):
+def create_rag_chain(vectorstore: FAISS, model_name):
     """
     Creates a Retrieval-Augmented Generation (RAG) chain.
     Args:
@@ -83,18 +89,12 @@ def create_rag_chain(vectorstore, model_name):
     Returns:
         Chain: RAG chain object
     """
+
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-    template = """
-You are an AI chatbot that provides detailed and polite answers based on the given context. You must answer in Korean.
-and add Sources: information end of your answer
-
-#Context
-{context}
-
-#Question
-{question}
-
-#Answer (Your answer should be in both English and Korean):
+    template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|> You are an assistant for question - answering tasks. If possible, translate into Korean, but do not translate technical terms and use them in their original language. Use the following pieces of retrieved context to answer the question. If you don't know the answer, just say that you don't know. Use three sentences maximum and keep the answer concise. Information that is not given should be used in a limited way. Let's think step-by-step.<|eot_id|><|start_header_id|>user<|end_header_id|>
+Question: {question} 
+Context: {context} 
+Answer: <|eot_id|><|start_header_id|>assistant<|end_header_id|>
 """
 
     prompt = ChatPromptTemplate.from_template(template)
@@ -103,19 +103,42 @@ and add Sources: information end of your answer
         model=model_name,
         max_length=50,
         repetition_penalty=1.2,
-        temperature=0.3,
-        top_p=0.9,
+        temperature=0,
+        top_p=0.3,
         top_k=50,
         num_return_sequences=1,
     )
 
+    # model = HuggingFacePipeline.from_model_id(
+    #     model_id="meta-llama/Llama-3.2-1B-Instruct",
+    #     task="text-generation",
+    #     device=0,
+    #     pipeline_kwargs={"max_new_tokens": 2048, "repetition_penalty": 1.2, "temperature":0.1, "top_p":0.3, "top_k" : 50 },
+    # )
+
+    meta_index = {}
+
+    for uid, doc in vectorstore.docstore._dict.items():
+        source = doc.metadata['source']
+        if source in meta_index:
+            meta_index[source].append(uid)
+        else:
+            meta_index[source] = [uid]
+
     def format_docs(docs):
         # Including document source metadata in the response
-        formatted_docs = "\n\n".join([d.page_content for d in docs])
-        sources = "\n".join(
-            [d.metadata.get("source", "Unknown Source") for d in docs]
-        )  # Get the source file(s)
-        return formatted_docs + "\n\nSources:\n" + sources
+        # formatted_docs = "\n\n".join([d.page_content for d in docs])
+        sources = {d.metadata.get("source", "Unknown Source") for d in docs}
+        print(sources)
+        
+        document_ids = set(d.metadata["source"] for d in docs)
+        documents_uids = [meta_index[doc_id] for doc_id in document_ids]
+        documents = []
+        for doc_ids in documents_uids:
+            for doc_id in doc_ids:
+                documents.append(vectorstore.docstore._dict[doc_id])
+        formatted_docs = "\n\n".join([d.page_content for d in documents])
+        return formatted_docs + "\n\nSources:\n" + "\n".join(sources)
 
     rag_chain = (
         {"context": retriever | format_docs, "question": RunnablePassthrough()}
@@ -149,13 +172,13 @@ def main():
 
     folder_path = "./tizen-docs"
     model_name = "intfloat/multilingual-e5-large-instruct"
-    llm_model_name = "llama3.2"
+    llm_model_name = "llama3.2:1b"
     vectorstore_path = "vectorstore"
 
     # Initialize embeddings model
     embeddings = HuggingFaceEmbeddings(
         model_name=model_name,
-        model_kwargs={"device": "cuda"},
+        model_kwargs={"device": "cpu"},
         encode_kwargs={"normalize_embeddings": True},
     )
 
@@ -177,8 +200,8 @@ def main():
     # Step 3: Query the RAG chain
     query = args.question  # Now using the question from the CLI
     print(f"Querying RAG chain with: {query}")
-    answer = rag_chain.invoke(query)
-    print(f"Answer:\n{answer}")
+    for answer in rag_chain.stream(query):
+        sys.stdout.write(answer)
 
 
 # Entry point
