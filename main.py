@@ -87,16 +87,6 @@ def create_rag_chain(vectorstore: FAISS, model_name):
     """
 
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-    glossary_text = ""
-    glossary = {
-        "JSON": "JavaScript Object Notation",
-        "GBS": "Git Build System",
-        "MIC": "Meego Image Creator",
-    }
-    if glossary:
-        glossary_text = "\n".join(
-            [f"- {term}: {definition}" for term, definition in glossary.items()]
-        )
 
     glossary_based_prompt = """
 You must answer the question strictly based on the given context and glossary:
@@ -127,19 +117,11 @@ You must answer the question strictly based on the given context and glossary:
 ### Context:
 {context}
 
-### Glossary:
-{glossary}
-
 ### Question:
 {question}
 
 ### Answer:
 """
-
-    prompt = PromptTemplate(
-        input_variables=["context", "glossary", "question"],
-        template=glossary_based_prompt,
-    )
 
     prompt = PromptTemplate(
         input_variables=["context", "question"],
@@ -166,13 +148,9 @@ You must answer the question strictly based on the given context and glossary:
             + "\n".join([d.metadata.get("source") for d in docs])
         )
 
-    def get_glossary(d):
-        return glossary_text
-
     rag_chain = (
         {
             "context": retriever | format_docs,
-            "glossary": get_glossary,
             "question": RunnablePassthrough(),
         }
         | prompt
@@ -205,7 +183,7 @@ def main():
 
     folder_path = "./tizen-docs"
     model_name = "intfloat/multilingual-e5-large-instruct"
-    llm_model_name = "llama3.2:1b"
+    llm_model_name = "gemma2:2b-instruct-q4_K_M"
     vectorstore_path = "vectorstore"
 
     # Initialize embeddings model
